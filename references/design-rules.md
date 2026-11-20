@@ -20,14 +20,14 @@ with the nozzle; scale Z numbers with the layer height (25–75 % of the nozzle)
 | Wall ✔ | 1 nozzle width (drops out below) | 2 lines (0.8–0.9 mm); structural 3–5 lines (1.2–2.4 mm) | one line has no strength and shows every seam |
 | Floor or roof ✔ | 1 layer | 3–5 layers (0.6–1.0 mm at 0.2) | fewer layers show infill and leak |
 | Overhang ✔ | 45° from vertical | 50–60° only for PLA with strong cooling | each layer needs half its width resting on the one below |
-| Bridge ✔ | up to about 30 mm between two anchors | under 20 mm; straight, at one height | longer spans sag; a span with one anchor is a cantilever and needs support |
+| Bridge ✔ | PLA 30 mm, PETG/ABS/ASA 20 mm, nylon/PC 15 mm, TPU 10 mm, between two anchors | under 20 mm; straight, at one height | longer spans sag; a span with one anchor is a cantilever and needs support |
 | Flat ledge with one anchor ✔ | 2 nozzle widths | none: chamfer it at 45° | prints into air |
 | Vertical hole | 2 mm | add 0.2 mm to the diameter (`pk.hole_d`) | holes print 0.1–0.3 mm small; drill the ones that matter |
 | Horizontal hole | round up to about 6 mm | teardrop above that (`pk.teardrop`) | the top of a round hole is a flat overhang |
 | Pin or post | 3 mm | 5 mm, or print it lying down, or use a screw | upright pins snap along layers |
 | Embossed text | stroke 2 lines wide, 2 layers high | 0.6–1.0 mm high, bold sans, capitals 6 mm+ | thin strokes vanish |
 | Engraved text | 0.6 mm wide, 0.4 mm deep | on vertical faces engrave, on top faces either | embossed text on a wall is a row of overhangs |
-| Gap between parts | 0.2 mm per side sliding | see `functional-parts.md` | parts fuse below about 0.15 mm |
+| Gap between parts ✔ | 0.15 mm, or they fuse | 0.2 mm per side sliding; see `functional-parts.md` | neighbouring lines melt together |
 | Bed edge | – | 0.4–0.6 mm chamfer (`pk.chamfer(obj, 0.5, "bottom")`) | first layer squashes wide (elephant's foot); a round here starts as an overhang |
 | Vertical edge | – | 1–2 mm round | sharp corners ring, lift and concentrate stress |
 | Inside corner under load | – | round, as large as fits | layers crack from sharp inside corners |

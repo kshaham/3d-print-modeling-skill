@@ -3,13 +3,18 @@
   import sys; sys.path.insert(0, "<this skill>/scripts"); import printkit as pk
 
 Every builder returns a closed, outward-facing mesh object. `union` and `cut` use Blender's exact
-boolean solver, so results stay watertight. Positions (`at`) are millimetres.
+boolean solver and then repair the seams it leaves, so results stay watertight. Positions (`at`)
+are millimetres.
+
+Two habits keep booleans clean:
+  - let a cutter overshoot what it cuts by a millimetre instead of ending flush with a face;
+  - sink a part 0.2 mm or more into the body it is joined to instead of resting it on the surface.
 
 Scene       new_scene()  save_blend(path)
 Solids      box  cylinder  sphere  prism  lathe  text
 Outlines    rounded_rect  slot  polygon          (lists of (x, y) for prism)
 Cutters     teardrop (horizontal hole that prints without support)  countersink  counterbore  hex_pocket
-Combine     union  cut  common  copy
+Combine     union  cut  common  copy  split (two keyed halves with pin sockets)
 Place       move  rotate  to_bed
 Edges       chamfer (segments > 1 gives a round)
 Numbers     segments_for  FIT  SCREW  hole_d
@@ -328,6 +333,76 @@ def common(a, *others, keep=False):
     return _boolean(a, others, "INTERSECT", keep)
 
 
+def split(ob, axis="z", at=0.0, pins=2, pin_d=5.0, pin_len=10.0, clearance=0.1):
+    """Cut a part in two across the plane axis = at, and key the halves with pin sockets.
+
+    Returns (low, high, pegs): the half below the plane, the half above it, and a list of loose
+    eight-sided pegs that print lying down and glue in. Sockets are pin_d + 2 * clearance wide and
+    half a pin deep in each half, placed as far from the cut's outline and from each other as the
+    cut face allows; fewer than `pins` are made if the face is too small (none if it cannot hold
+    one). Turn each half so its cut face sits on the bed. The original object is consumed."""
+    i = "xyz".index(axis.lower())
+    lo, hi = bounds(ob)
+    size = [hi[k] - lo[k] + 20.0 for k in range(3)]
+    mid = [(hi[k] + lo[k]) / 2.0 for k in range(3)]
+
+    def half(upper):
+        c, s = list(mid), list(size)
+        s[i] = (hi[i] - at if upper else at - lo[i]) + 10.0
+        c[i] = at + s[i] / 2.0 if upper else at - s[i] / 2.0
+        return box(s[0], s[1], s[2], at=(c[0], c[1], c[2] - s[2] / 2.0), name="_half")
+
+    high = copy(ob, ob.name + "-b")
+    low = ob
+    low.name = low.name + "-a"
+    common(low, half(False))
+    common(high, half(True))
+
+    # candidate socket centres: points of the cut face, scored by distance to its outline
+    bm = _edit(low)
+    cap = [f for f in bm.faces if abs(abs(f.normal[i]) - 1.0) < 1e-4
+           and all(abs(v.co[i] - at) < 1e-4 for v in f.verts)]
+    edges = [e for f in cap for e in f.edges if sum(1 for g in e.link_faces if g in cap) == 1]
+    segs = [(e.verts[0].co.copy(), e.verts[1].co.copy()) for e in edges]
+    pts = []
+    for f in cap:
+        vs = [v.co for v in f.verts]
+        for k in range(1, len(vs) - 1):                       # fan: centroids and edge midpoints
+            pts.append((vs[0] + vs[k] + vs[k + 1]) / 3.0)
+            pts.append((vs[0] + vs[k + 1]) / 2.0)
+    bm.free()
+
+    def edge_dist(p):
+        best = 1e9
+        for a, b in segs:
+            d = b - a
+            t = max(0.0, min(1.0, (p - a).dot(d) / max(d.length_squared, 1e-12)))
+            best = min(best, (a + d * t - p).length)
+        return best
+
+    need = pin_d / 2.0 + clearance + 1.6                       # socket plus a wall round it
+    scored = sorted(((edge_dist(p), p) for p in pts), key=lambda x: -x[0])
+    chosen = []
+    for d, p in scored:
+        if d < need or len(chosen) >= pins:
+            break
+        if all((p - q).length > 2.5 * pin_d for q in chosen):
+            chosen.append(p)
+    pegs = []
+    depth = pin_len / 2.0 + 0.3
+    for n, p in enumerate(chosen):
+        start = list(p)
+        start[i] = at - depth
+        socket = cylinder(pin_d + 2.0 * clearance, 2.0 * depth, at=start, axis=axis, name="_socket")
+        cut(low, socket, keep=True)
+        cut(high, socket)
+        # eight-sided so it prints lying on a flat with no support, and still fits the round socket
+        flats = pin_d * math.cos(math.pi / 8.0)
+        pegs.append(prism(polygon(8, flats), pin_len - 0.4, at=(0, n * (pin_d + 3.0), flats / 2.0),
+                          axis="x", name=f"{low.name[:-2]}-peg{n + 1}"))
+    return low, high, pegs
+
+
 def copy(ob, name=None):
     new = ob.copy()
     new.data = ob.data.copy()
@@ -437,12 +512,48 @@ def colour(ob, hex_colour, filament=None):
 
 # ---------------------------------------------------------------------------------------- finish
 
+def _heal(bm, tol=1e-4):
+    """Close T-junctions: where a vertex sits on an open edge without splitting it (booleans leave
+    these beside coplanar faces), split the edge there and weld. Returns how many were closed."""
+    done = 0
+    for _ in range(64):
+        open_edges = [e for e in bm.edges if e.is_boundary]
+        if not open_edges:
+            break
+        open_verts = {v for e in open_edges for v in e.verts}
+        hit = None
+        for e in open_edges:
+            a, b = e.verts
+            d = b.co - a.co
+            length2 = d.length_squared
+            if length2 < 1e-12:
+                continue
+            for v in open_verts:
+                if v is a or v is b:
+                    continue
+                t = (v.co - a.co).dot(d) / length2
+                if 1e-6 < t < 1.0 - 1e-6 and (a.co + d * t - v.co).length < tol:
+                    hit = (e, a, t, v)
+                    break
+            if hit:
+                break
+        if not hit:
+            break
+        e, a, t, v = hit
+        _edge, new = bmesh.utils.edge_split(e, a, t)
+        new.co = v.co
+        bmesh.ops.pointmerge(bm, verts=[new, v], merge_co=v.co)
+        done += 1
+    return done
+
+
 def clean(ob):
-    """Weld coincident vertices and drop zero-area faces and loose vertices. Face directions are
-    left alone: a boolean result is already consistent, and the walls of an inner cavity must keep
-    facing into the cavity."""
+    """Weld coincident vertices, close T-junctions, and drop zero-area faces and loose vertices.
+    Face directions are left alone: a boolean result is already consistent, and the walls of an
+    inner cavity must keep facing into the cavity."""
     bm = _edit(ob)
     bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=1e-5)
+    _heal(bm)
     bmesh.ops.dissolve_degenerate(bm, dist=1e-6, edges=bm.edges[:])
     loose = [v for v in bm.verts if not v.link_faces]
     if loose:
@@ -465,6 +576,6 @@ def export(objects, out_base, formats=("3mf", "stl"), settings=None, report=None
     import print_export as px
     objs = objects if isinstance(objects, (list, tuple)) else [objects]
     res = px.export(objs, out_base, formats=formats, settings=settings, report=report, **kw)
-    for f in res["files"]:
+    for f in res["files"] + [res["manifest"]]:
         print("WROTE", f)
     return res

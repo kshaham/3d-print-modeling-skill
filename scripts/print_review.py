@@ -19,7 +19,8 @@ Thickness colours  red: too thin to print   orange: thinner than the recommended
                    dark: the cut face of the section
 The checkered bed has 10 mm squares (50 or 100 mm for large models; the caption says which).
 
-Also writes OUT.json: the print_check report. Exit code is 0 even when the check fails; this tool
+Also writes the print_check report beside the image, as OUT.json (same name, .json).
+Yellow at exactly the limit is expected on 45 degree chamfers, gussets and teardrop roofs. Exit code is 0 even when the check fails; this tool
 is for looking, print_check.py is the gate.
 
 From another script running in Blender:
@@ -41,6 +42,7 @@ from mathutils import Matrix, Vector
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import print_check as pc  # noqa: E402
 
+LIGHT = os.environ.get("PRINT_REVIEW_LIGHT", "paint.sl")
 GREY = (0.62, 0.64, 0.66)
 RED, YELLOW, GREEN, BLUE = (0.82, 0.08, 0.06), (0.92, 0.66, 0.05), (0.10, 0.58, 0.22), (0.08, 0.28, 0.85)
 ORANGE, CUT = (0.95, 0.42, 0.03), (0.07, 0.07, 0.09)
@@ -224,6 +226,10 @@ def review(path=None, objects=None, out="review.png", tile=560, section=None, **
     r.film_transparent = False
     sh = scene.display.shading
     sh.light, sh.color_type = "STUDIO", "VERTEX"
+    try:                                  # an even light: faces seen edge-on stay readable
+        sh.studio_light = LIGHT
+    except TypeError:
+        pass
     sh.show_cavity, sh.show_object_outline, sh.show_backface_culling = True, False, False
     sh.show_shadows = False
     scene.display.render_aa = "8"
@@ -244,7 +250,18 @@ def review(path=None, objects=None, out="review.png", tile=560, section=None, **
     size = "%g x %g x %g mm" % tuple(rep["size_mm"])
     sup = rep["orientation"]["support_area_mm2"]
     sec_name = "xyz"[axis]
-    note_parts = f"  {len(given)} parts in their colours" if multi else ""
+    # tile 7 looks from the corner that shows the most thin wall; from the back when there is none
+    flagged = (thick < lim - 1e-3)
+    wall_dir, wall_side, best = (1, -1, -0.75), "from the back", 0.0
+    if flagged.any():
+        for d, side in (((1, -1, -0.75), "from the back"), ((-1, 1, -0.75), "from the front"),
+                        ((1, 1, -0.75), "from the front left"), ((-1, -1, -0.75), "from the back right"),
+                        ((1, -1, 0.75), "from below, back"), ((-1, 1, 0.75), "from below, front")):
+            v = np.array(d) / np.linalg.norm(d)
+            seen = float((_area[flagged] * np.maximum(0.0, -(normal[flagged] @ v))).sum())
+            if seen > best:
+                wall_dir, wall_side, best = d, side, seen
+    note_parts = f"  {len(given)} parts, one colour each" if multi else ""
     sec_dir = (0, 1, 0) if axis == 1 else (-1, 0, 0) if axis == 0 else (0, 0, -1)
     shots = [
         (f"1 OVERHANG  {size}  squares {sq:g} mm", o_over, (-1, 1, -0.75), True),
@@ -254,8 +271,8 @@ def review(path=None, objects=None, out="review.png", tile=560, section=None, **
         ("4 FRONT" + note_parts, o_plain, (0, 1, 0), True),
         ("5 RIGHT" + note_parts, o_plain, (-1, 0, 0), True),
         ("6 TOP" + note_parts, o_plain, (0, 0, -1), True),
-        (f"7 WALLS from the back  thinnest {rep['walls']['min']} mm", o_wall, (1, -1, -0.75), True),
-        (f"8 SECTION at {sec_name} = {value:.1f} mm  dark = solid", o_sec, sec_dir, axis != 2),
+        (f"7 WALLS {wall_side}  thinnest {rep['walls']['min']} mm", o_wall, wall_dir, True),
+        (f"8 SECTION at {sec_name} = {value:.1f} mm  dark solid, orange/red thin", o_sec, sec_dir, axis != 2),
     ]
     tmp = tempfile.mkdtemp(prefix="print_review_")
     paths = []
@@ -263,6 +280,7 @@ def review(path=None, objects=None, out="review.png", tile=560, section=None, **
         for o in {o_over, o_wall, o_sec, o_plain}:
             o.hide_render = o is not ob
         bed.hide_render = not show_bed
+        bed.hide_render = bed.hide_render or direction[2] > 0
         if i == 1:                        # the part turned over, so the light falls on its underside
             ob.rotation_euler = (math.pi, 0.0, 0.0)
             _camera(cam, direction, (lo[0], -hi[1], -hi[2]), (hi[0], -lo[1], -lo[2]))
@@ -295,6 +313,7 @@ def main():
     print(pc.summary(rep))
     if rep.get("review_board"):
         print("REVIEW BOARD", rep["review_board"])
+        print("REPORT", os.path.splitext(rep["review_board"])[0] + ".json")
     print(pc.MARK + json.dumps(rep, default=pc.to_json, separators=(",", ":")), flush=True)
 
 

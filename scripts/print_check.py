@@ -10,7 +10,8 @@ Several objects are the parts of one print (one per colour or material): each mu
 solid on its own, and they may touch.
 
 Process, build volume, nozzle and material come from the saved printer profile
-(printer_profile.py) unless a flag overrides them. Without a profile: fdm, 0.4 mm, 256 mm cube, PLA.
+(printer_profile.py) unless a flag overrides them. Without a profile the defaults are those of a
+Bambu Lab P1S: filament, 0.4 mm nozzle, 256 mm cube, PLA.
 
 Options
   --objects A B        only these objects (default: every visible mesh)
@@ -18,7 +19,9 @@ Options
   --nozzle MM          FDM nozzle                  --layer MM     layer height (0.2 fdm, 0.05 resin, 0.1 sls)
   --min-wall MM        thinnest wall accepted without a warning (2 nozzle widths; 1.0 resin and sls)
   --overhang DEG       steepest angle from vertical that prints unsupported (45 fdm, 60 resin)
-  --bridge MM          longest flat span between two anchors that prints unsupported (30 fdm, 5 resin)
+  --bridge MM          longest flat span between two anchors that prints unsupported
+                       (PLA 30, PETG/ABS/ASA 20, nylon/PC 15, TPU 10; resin 5)
+  --gap MM             facing surfaces closer than this fuse (0.15 fdm, 0.10 resin, 0.30 sls)
   --build X,Y,Z        printer build volume
   --material M         pla petg abs asa tpu pc pa pa12 resin (density and price for the estimate)
   --infill PCT         infill for the estimate (15)    --walls N   perimeters for the estimate (2)
@@ -68,6 +71,15 @@ MATERIAL = {
     "tpu": (1.21, 35.0), "pc": (1.20, 45.0), "pa12": (1.01, 60.0), "pa": (1.14, 50.0),
     "resin": (1.15, 35.0),
 }
+# FDM limits that depend on the filament: longest clean bridge (mm), steepest overhang from vertical (deg)
+FDM_LIMITS = {"pla": (30.0, 45.0), "petg": (20.0, 45.0), "abs": (20.0, 45.0), "asa": (20.0, 45.0),
+              "tpu": (10.0, 40.0), "pc": (15.0, 45.0), "pa": (15.0, 45.0)}
+# Average flow (mm3/s) a fast current printer sustains over a whole print with a 0.4 mm nozzle
+# at 0.2 mm layers, fitted to Bambu Studio's P1S profiles. Older bed-slingers manage about half.
+FDM_FLOW = {"pla": 8.0, "petg": 5.0, "abs": 7.0, "asa": 7.0, "tpu": 2.5, "pc": 5.0, "pa": 5.0}
+SLOW_PRINTERS = ("ender 3", "ender-3", "mk3", "mk2", "prusa mini", "kobra 2", "cr-10", "anet", "ender 5")
+# facing surfaces closer than this fuse together (mm)
+GAP = {"fdm": 0.15, "resin": 0.10, "sls": 0.30}
 UNIT_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
 MM3_UNITS = {"micron": 0.001, "millimeter": 1.0, "centimeter": 10.0, "inch": 25.4, "foot": 304.8,
              "meter": 1000.0}
@@ -77,11 +89,13 @@ NS_PROD = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06"
 
 # --------------------------------------------------------------------------------------- loading
 
-def _mesh_object(name, verts, tris):
+def _mesh_object(name, verts, tris, colour=None):
     me = bpy.data.meshes.new(name)
     me.from_pydata([tuple(v) for v in verts], [], [tuple(t) for t in tris])
     me.update()
     ob = bpy.data.objects.new(name, me)
+    if colour:
+        ob["print_colour"] = colour[:7].upper()
     bpy.context.scene.collection.objects.link(ob)
     return ob
 
@@ -95,10 +109,11 @@ def _affine_3mf(text):
                    (m[2], m[5], m[8], m[11]), (0.0, 0.0, 0.0, 1.0)))
 
 
-def read_3mf(path):
-    """Return ([(name, verts Nx3 in mm, tris Mx3)], notes). Core spec plus the production
-    extension's external object files (Bambu Studio and OrcaSlicer projects)."""
-    out, cache = [], {}
+def read_3mf(path, colours=False):
+    """Return [(name, verts Nx3 in mm, tris Mx3)]. Core spec plus the production extension's
+    external object files (Bambu Studio and OrcaSlicer projects). With colours=True each entry
+    gains a fourth item: the part's display colour ("#RRGGBB") or None."""
+    out, cache, tint = [], {}, []
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
 
@@ -111,8 +126,18 @@ def read_3mf(path):
                 cache[part] = (root, scale, objs)
             return cache[part]
 
+        def colour_of(root, o):
+            if o.get("pid") is None:
+                return None
+            for group in root.iter(f"{{{NS_CORE}}}basematerials"):
+                if group.get("id") == o.get("pid"):
+                    bases = list(group.iter(f"{{{NS_CORE}}}base"))
+                    i = int(o.get("pindex", "0"))
+                    return bases[i].get("displaycolor") if i < len(bases) else None
+            return None
+
         def collect(part, oid, mat, name):
-            _root, scale, objs = model(part)
+            root_, scale, objs = model(part)
             o = objs.get(oid)
             if o is None:
                 return
@@ -129,6 +154,7 @@ def read_3mf(path):
                     if np.linalg.det(m[:3, :3]) < 0:
                         ts = ts[:, ::-1]
                     out.append((name or f"object_{oid}", vs, ts))
+                    tint.append(colour_of(root_, o))
             for c in o.iter(f"{{{NS_CORE}}}component"):
                 sub = c.get(f"{{{NS_PROD}}}path") or part
                 t = _affine_3mf(c.get("transform"))
@@ -147,7 +173,7 @@ def read_3mf(path):
         if not items:
             for oid in model(main)[2]:
                 collect(main, oid, Matrix.Identity(4), None)
-    return out
+    return [(n, v, t, c) for (n, v, t), c in zip(out, tint)] if colours else out
 
 
 def load_model(path, unit="auto"):
@@ -171,8 +197,8 @@ def load_model(path, unit="auto"):
         bpy.ops.import_scene.gltf(filepath=path)
         file_mm = 1000.0  # glTF is metres
     elif ext == ".3mf":
-        for name, vs, ts in read_3mf(path):
-            _mesh_object(name, vs, ts)
+        for name, vs, ts, colour in read_3mf(path, colours=True):
+            _mesh_object(name, vs, ts, colour)
     else:
         raise ValueError(f"unsupported model type {ext}")
     objs = [o for o in bpy.data.objects if o not in before and o.type == "MESH"]
@@ -647,16 +673,33 @@ def wall_thickness(verts, tris, bvh, opts, cap=120000):
     nrm = normal[face]
     weight = area[face] / np.maximum(per[face], 1)
     thick = np.full(len(face), np.inf)
+    gap = np.full(len(face), np.inf)
+    reach = max(opts["gap"] * 4.0, 1.0)
     P, N = pts.tolist(), nrm.tolist()
     for i in range(len(face)):
         n = Vector(N[i])
-        loc, hn, _idx, dist = bvh.ray_cast(Vector(P[i]) - n * 1e-3, -n)
+        p = Vector(P[i])
+        loc, hn, _idx, dist = bvh.ray_cast(p - n * 1e-3, -n)
         if loc is not None and hn.dot(n) < 0.0:
             thick[i] = dist + 1e-3
+        loc, hn, _idx, dist = bvh.ray_cast(p + n * 1e-3, n, reach)       # the surface facing this one
+        if loc is not None and hn.dot(n) < -0.5:
+            gap[i] = dist + 1e-3
     ok = np.isfinite(thick)
     per_face = np.full(len(tris), np.inf)
     np.minimum.at(per_face, face, thick)
     rep = {"samples": int(len(face)), "min_wall_mm": opts["min_wall"], "hard_wall_mm": opts["hard_wall"]}
+    narrow = gap < opts["gap"] - 1e-3
+    gaps = {"limit_mm": opts["gap"], "min": round(float(gap.min()), 3) if np.isfinite(gap).any() else None,
+            "narrow_area_mm2": round(float(weight[narrow].sum()), 2), "at": []}
+    for i in np.argsort(gap)[:200].tolist():
+        if not narrow[i] or len(gaps["at"]) >= 6:
+            break
+        q = pts[i]
+        if all(np.linalg.norm(q - np.array(w[:3])) > 5.0 for w in gaps["at"]):
+            gaps["at"].append([round(float(q[0]), 2), round(float(q[1]), 2), round(float(q[2]), 2),
+                               round(float(gap[i]), 2)])
+    rep["gaps"] = gaps
     if not ok.any():
         rep.update(min=None, p01=None, thin_area_mm2=0.0, thin_pct=0.0, too_thin_area_mm2=0.0, thin_at=[])
         return rep, per_face
@@ -688,9 +731,9 @@ def wall_thickness(verts, tris, bvh, opts, cap=120000):
 # --------------------------------------------------------------------------------------- options
 
 def options(process=None, nozzle=None, layer=None, min_wall=None, overhang=None, bridge=None,
-            build=None, material=None, infill=15.0, walls=2, **_ignored):
+            build=None, material=None, infill=15.0, walls=2, gap=None, **_ignored):
     """Settings for a check. Anything left as None comes from the saved printer profile
-    (printer_profile.py), then from the process defaults."""
+    (printer_profile.py), then from the process and material defaults."""
     prof = printer_profile.load()
     process = process or prof.get("process") or "fdm"
     if process not in PROCESS:
@@ -698,24 +741,29 @@ def options(process=None, nozzle=None, layer=None, min_wall=None, overhang=None,
     p = dict(PROCESS[process])
     same = prof.get("process", process) == process          # profile numbers only fit its own process
     o = {"process": process, "supports": p["supports"],
-         "printer": prof.get("printer") if same else None}
-    o["nozzle"] = float(nozzle or (same and prof.get("nozzle")) or 0.4)
-    o["layer"] = float(layer or (same and prof.get("layer")) or p["layer"])
-    line = 1.125 * o["nozzle"]
-    o["line_width"] = line
-    o["hard_wall"] = p["hard_wall"] if p["hard_wall"] is not None else o["nozzle"]
-    o["min_wall"] = float(min_wall) if min_wall else (p["min_wall"] if p["min_wall"] is not None
-                                                      else 2.0 * o["nozzle"])
-    o["hard_wall"] = min(o["hard_wall"], o["min_wall"])
-    o["overhang"] = float(overhang) if overhang is not None else p["overhang"]
-    o["bridge"] = float(bridge) if bridge is not None else p["bridge"]
-    o["cantilever"] = p["cantilever"] if p["cantilever"] is not None else 2.0 * o["nozzle"]
-    o["build"] = [float(b) for b in (build or (same and prof.get("build")) or (256.0, 256.0, 256.0))]
+         "printer": prof.get("printer") if same else None,
+         "colours": prof.get("colors") if same else None,
+         "colour_system": (prof.get("color_system") or "") if same else ""}
     fallback = "resin" if process == "resin" else "pa12" if process == "sls" else "pla"
     wanted = (material or (same and prof.get("default_material")) or fallback).lower()
     o["material_name"] = wanted
     o["material"] = wanted if wanted in MATERIAL else next((m for m in MATERIAL if wanted.startswith(m)),
                                                            fallback)
+    o["nozzle"] = float(nozzle or (same and prof.get("nozzle")) or 0.4)
+    o["layer"] = float(layer or (same and prof.get("layer")) or p["layer"])
+    o["line_width"] = 1.125 * o["nozzle"]
+    o["hard_wall"] = p["hard_wall"] if p["hard_wall"] is not None else o["nozzle"]
+    o["min_wall"] = float(min_wall) if min_wall else (p["min_wall"] if p["min_wall"] is not None
+                                                      else 2.0 * o["nozzle"])
+    o["hard_wall"] = min(o["hard_wall"], o["min_wall"])
+    limits = (p["bridge"], p["overhang"])
+    if process == "fdm":
+        limits = FDM_LIMITS.get(o["material"], limits)
+    o["overhang"] = float(overhang) if overhang is not None else limits[1]
+    o["bridge"] = float(bridge) if bridge is not None else limits[0]
+    o["cantilever"] = p["cantilever"] if p["cantilever"] is not None else 2.0 * o["nozzle"]
+    o["gap"] = float(gap) if gap is not None else GAP[process]
+    o["build"] = [float(b) for b in (build or (same and prof.get("build")) or (256.0, 256.0, 256.0))]
     o["infill"] = float(infill)
     o["walls"] = int(walls)
     return o
@@ -728,8 +776,10 @@ def estimate(volume, area, orient, opts):
         shell = min(volume, area * opts["walls"] * opts["line_width"])
         part = shell + (volume - shell) * opts["infill"] / 100.0
         support = orient["support_volume_mm3"] * 0.12
-        flow = 0.55 * opts["line_width"] * opts["layer"] * 120.0      # mm3/s averaged over a print
-        seconds = (part + support) / max(flow, 1e-6) + orient["layers"] * 4.0
+        flow = FDM_FLOW.get(opts["material"], 6.0) * min(2.0, opts["line_width"] * opts["layer"] / 0.09)
+        if any(s in (opts.get("printer") or "").lower() for s in SLOW_PRINTERS):
+            flow *= 0.5
+        seconds = 180.0 + (part + support) / max(flow, 1e-6) + orient["layers"] * 2.0
     elif opts["process"] == "resin":
         part, support = volume, orient["support_volume_mm3"] * 0.03
         seconds = orient["layers"] * 7.0                               # exposure and lift per layer
@@ -873,9 +923,12 @@ def run(path=None, objects=None, unit="auto", intersections=True, keep=False, **
             total += n
             where += at
         rep["self_intersections"] = total
-        if total:
+        if total and nshell > len(parts):
             warnings.append(f"{total} pairs of faces cross or touch without sharing an edge, e.g. at "
                             f"{where[:3]}. Union overlapping pieces into one shell before export")
+        elif total:
+            advice.append(f"{total} place(s) where faces touch without sharing an edge, e.g. at {where[:3]} "
+                          f"(a corner resting on a neighbouring face). Slicers cope; nothing to union")
     else:
         rep["self_intersections"] = None
 
@@ -954,9 +1007,51 @@ def run(path=None, objects=None, unit="auto", intersections=True, keep=False, **
         elif walls["thin_area_mm2"] > max(2.0, 0.002 * area_total):
             warnings.append(f"{walls['thin_area_mm2']:.0f} mm2 of wall is thinner than {opts['min_wall']} mm "
                             f"(thinnest {walls['min']} mm, e.g. at {[a[:3] for a in walls['thin_at'][:3]]})")
+        elif walls["thin_at"]:
+            advice.append(f"thinnest spot {walls['thin_at'][0][3]} mm at {walls['thin_at'][0][:3]} covers under "
+                          f"{max(2.0, 0.002 * area_total):.0f} mm2: a sharp edge or tip. Blunt it if it must be "
+                          f"strong or exact")
+    gaps = walls.pop("gaps")
+    rep["gaps"] = gaps
+    if gaps["narrow_area_mm2"] > 1.0:
+        warnings.append(f"{gaps['narrow_area_mm2']:.0f} mm2 of facing surfaces are closer than "
+                        f"{opts['gap']} mm and will fuse (closest {gaps['min']} mm, e.g. at "
+                        f"{[a[:3] for a in gaps['at'][:3]]}). Open the gap or join the parts")
+
+    # --- colours: which layers hold more than one
+    if multi and len({p.get("colour") for p in parts if p.get("colour")}) > 1:
+        keys = [(p.get("colour") or p["name"]) for p in parts]
+        zlo, zhi = np.zeros(len(parts)), np.zeros(len(parts))
+        for i in range(len(parts)):
+            if (owner == i).any():
+                zs = verts[np.unique(tris[owner == i])][:, 2]
+                zlo[i], zhi[i] = zs.min(), zs.max()
+        mids = float(verts[:, 2].min()) + (np.arange(orient["layers"]) + 0.5) * opts["layer"]
+        count = np.zeros(len(mids), int)
+        for key in set(keys):
+            on = np.zeros(len(mids), bool)
+            for i, k in enumerate(keys):
+                if k == key:
+                    on |= (mids > zlo[i]) & (mids < zhi[i])
+            count += on
+        mixed = int((count > 1).sum())
+        changes = int(np.maximum(count - 1, 0).sum())
+        rep["colours"] = {"count": len(set(keys)), "layers_with_several": mixed,
+                          "filament_changes": changes}
+        have = opts.get("colours")
+        if have and len(set(keys)) > int(have):
+            warnings.append(f"the model uses {len(set(keys))} colours but the printer profile has {have}")
+        if mixed and "manual" in opts.get("colour_system", "").lower():
+            warnings.append(f"{mixed} layers hold more than one colour, but colour changes on this printer are "
+                            f"manual swaps at a layer: arrange the colours in bands by height")
+        elif mixed > 0.25 * orient["layers"] and mixed > 10:
+            advice.append(f"{mixed} of {orient['layers']} layers hold more than one colour (about {changes} "
+                          f"filament changes). On a single-nozzle changer each change purges and takes a "
+                          f"minute or two: keep colour to a few layers, e.g. a 0.6 mm inlay on the top face")
 
     rep["estimate"] = estimate(volume, area_total, orient, opts)
-    rep["settings"] = {k: opts[k] for k in ("nozzle", "layer", "min_wall", "overhang", "bridge", "infill", "walls")}
+    rep["settings"] = {k: opts[k] for k in ("nozzle", "layer", "min_wall", "overhang", "bridge", "gap",
+                                            "infill", "walls")}
     rep["errors"], rep["warnings"], rep["advice"] = errors, warnings, advice
     rep["pass"] = not errors
     if keep:
@@ -981,6 +1076,10 @@ def summary(rep):
         f"  thinnest wall {rep['walls']['min']} mm   rough estimate {e['mass_g']} g {e['material']}, "
         f"{e['time_min_rough']} min, {e['layers']} layers",
     ]
+    if rep.get("colours"):
+        c = rep["colours"]
+        lines.append(f"  {c['count']} colours   {c['layers_with_several']} layers hold more than one   "
+                     f"about {c['filament_changes']} filament changes")
     lines += [f"  ERROR    {x}" for x in rep["errors"]]
     lines += [f"  WARNING  {x}" for x in rep["warnings"]]
     lines += [f"  ADVICE   {x}" for x in rep["advice"]]
@@ -1004,6 +1103,7 @@ def add_arguments(p):
     p.add_argument("--min-wall", type=float, dest="min_wall")
     p.add_argument("--overhang", type=float)
     p.add_argument("--bridge", type=float)
+    p.add_argument("--gap", type=float)
     p.add_argument("--build")
     p.add_argument("--material")
     p.add_argument("--infill", type=float, default=15.0)
@@ -1017,7 +1117,7 @@ def cli_argv():
 
 
 def kwargs_from(a):
-    kw = {k: getattr(a, k) for k in ("process", "nozzle", "layer", "min_wall", "overhang", "bridge",
+    kw = {k: getattr(a, k) for k in ("process", "nozzle", "layer", "min_wall", "overhang", "bridge", "gap",
                                      "material", "infill", "walls", "unit")}
     kw["build"] = [float(x) for x in a.build.replace("x", ",").split(",")] if a.build else None
     return kw

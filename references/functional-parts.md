@@ -36,17 +36,16 @@ Clearance is per side: a 10 mm pin in a "slide" hole needs a 10.4 mm hole.
 
 The table is a starting point. A gauge takes 20 minutes to print and replaces guessing:
 
-```python
-import printkit as pk
-pk.new_scene()
-plate = pk.box(74, 16, 6)
-for i, c in enumerate((0.05, 0.10, 0.15, 0.20, 0.30, 0.40)):
-    pk.cut(plate, pk.cylinder(8.0 + 2 * c, 8, at=(-30 + i * 12, 0, -1)))
-pin = pk.cylinder(8.0, 12, at=(0, 20, 0))
+```
+python scripts/blender_run.py assets/author_fit_gauge.py --out out
 ```
 
-Try the pin in each hole, note which clearance gives each fit, and save the result in the
-printer profile notes (`printer_profile.py --set notes="slide fit 0.15 petg"`).
+It writes a plate with six holes for an 8 mm pin, marked 05 to 40 (clearance per side in
+hundredths of a millimetre), and the pin. Ask the user to try the pin in each hole and say
+which clearance gives a press fit, a snug fit and a free slide; save the answer in the printer
+profile (`printer_profile.py --set notes="PETG: press 0.05, snug 0.15, slide 0.25"`) and design
+from it. `print_check.py` warns when facing surfaces are closer than 0.15 mm (`--gap`), the
+distance at which printed parts fuse.
 
 ## Screws, nuts and inserts
 
@@ -96,7 +95,8 @@ Keep strain under about 1.5 % for PLA, 3 % for PETG and ABS, 5 % or more for nyl
 - Keep the first layer of each part separate on the bed (elephant's foot fuses close neighbours):
   0.5 mm gap at bed level or a chamfer on both.
 - Give the user a way to break it free: a lever arm, a slot for a blade.
-- Check with `print_check.py`: the parts must be separate shells, none floating in mid-air.
+- Check with `print_check.py`: the parts must be separate shells, none floating in mid-air,
+  and no "will fuse" warning between them.
 
 ## Enclosures
 

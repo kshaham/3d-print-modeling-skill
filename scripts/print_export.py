@@ -44,33 +44,49 @@ def _xml(text):
     return (str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def write_3mf(path, parts, title="part", colours=None):
-    """parts: [(name, verts Nx3 mm, tris Mx3)]. Core 3MF, unit millimeter, one object per part.
+def write_3mf(path, parts, title="part", colours=None, assembly=None):
+    """parts: [(name, verts Nx3 mm, tris Mx3)]. Core 3MF, unit millimeter.
+
     colours: optional [(hex "#RRGGBB" or None, filament name or None)] per part, written as base
-    materials so the parts show in their colours; the slicer still assigns a filament to each part."""
+    materials. Bambu Studio, OrcaSlicer and PrusaSlicer map them to filaments 1, 2, 3... in order.
+    assembly: True writes the parts as the components of one object, so a slicer keeps them
+    together when it arranges the plate (essential for colours inlaid in a body); False writes
+    separate objects that the slicer may move apart. Default: an assembly when any part has a colour."""
     colours = colours or [(None, None)] * len(parts)
-    used = [i for i, (c, _f) in enumerate(colours) if c]
+    palette = []                                  # distinct colours in order of first use: filament 1, 2, ...
+    for c, f in colours:
+        if c and c.upper() not in [p[0] for p in palette]:
+            palette.append((c.upper(), f))
+    slot = [([p[0] for p in palette].index(c.upper()) if c else 0) for c, _f in colours]
     mat_id = len(parts) + 1
+    if assembly is None:
+        assembly = bool(palette) and len(parts) > 1
     out = ['<?xml version="1.0" encoding="UTF-8"?>\n'
            '<model unit="millimeter" xml:lang="en-US" '
            'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n'
            f' <metadata name="Title">{_xml(title)}</metadata>\n'
            ' <metadata name="Application">3d-print-modeling skill</metadata>\n <resources>\n']
-    if used:
+    if palette:
         out.append(f'  <basematerials id="{mat_id}">\n')
-        for i in used:
-            c, f = colours[i]
-            out.append(f'   <base name="{_xml(f or parts[i][0])}" displaycolor="{_xml(c.upper())}"/>\n')
+        for n, (c, f) in enumerate(palette, 1):
+            out.append(f'   <base name="{_xml(f or "filament " + str(n))}" displaycolor="{_xml(c)}"/>\n')
         out.append('  </basematerials>\n')
     for i, (name, verts, tris) in enumerate(parts, 1):
-        mat = f' pid="{mat_id}" pindex="{used.index(i - 1)}"' if (i - 1) in used else ""
+        mat = f' pid="{mat_id}" pindex="{slot[i - 1]}"' if palette else ""
         out.append(f'  <object id="{i}" type="model"{mat} name="{_xml(name)}">\n   <mesh>\n    <vertices>\n')
         out.append("".join(f'     <vertex x="{x:.5f}" y="{y:.5f}" z="{z:.5f}"/>\n' for x, y, z in verts.tolist()))
         out.append("    </vertices>\n    <triangles>\n")
         out.append("".join(f'     <triangle v1="{a}" v2="{b}" v3="{c}"/>\n' for a, b, c in tris.tolist()))
         out.append("    </triangles>\n   </mesh>\n  </object>\n")
-    out.append(" </resources>\n <build>\n")
-    out.append("".join(f'  <item objectid="{i}"/>\n' for i in range(1, len(parts) + 1)))
+    if assembly:
+        whole = len(parts) + 2
+        out.append(f'  <object id="{whole}" type="model" name="{_xml(title)}">\n   <components>\n')
+        out.append("".join(f'    <component objectid="{i}"/>\n' for i in range(1, len(parts) + 1)))
+        out.append("   </components>\n  </object>\n")
+        out.append(f' </resources>\n <build>\n  <item objectid="{whole}"/>\n')
+    else:
+        out.append(" </resources>\n <build>\n")
+        out.append("".join(f'  <item objectid="{i}"/>\n' for i in range(1, len(parts) + 1)))
     out.append(" </build>\n</model>\n")
     types = ('<?xml version="1.0" encoding="UTF-8"?>\n'
              '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -85,6 +101,18 @@ def write_3mf(path, parts, title="part", colours=None):
         z.writestr("[Content_Types].xml", types)
         z.writestr("_rels/.rels", rels)
         z.writestr("3D/3dmodel.model", "".join(out))
+        if assembly and palette:
+            # Bambu Studio and OrcaSlicer read each part's filament from this file; without it every
+            # part of a multi-part object prints in filament 1. Other slicers ignore it.
+            cfg = ['<?xml version="1.0" encoding="UTF-8"?>\n<config>\n'
+                   f'  <object id="{len(parts) + 2}">\n    <metadata key="name" value="{_xml(title)}"/>\n'
+                   '    <metadata key="extruder" value="1"/>\n']
+            for i, (name, _v, _t) in enumerate(parts, 1):
+                cfg.append(f'    <part id="{i}" subtype="normal_part">\n'
+                           f'      <metadata key="name" value="{_xml(name)}"/>\n'
+                           f'      <metadata key="extruder" value="{slot[i - 1] + 1}"/>\n    </part>\n')
+            cfg.append("  </object>\n</config>\n")
+            z.writestr("Metadata/model_settings.config", "".join(cfg))
 
 
 def export(objects=None, out_base="part", formats=("3mf",), split=False, keep_origin=False, unit="auto",
@@ -130,9 +158,14 @@ def export(objects=None, out_base="part", formats=("3mf",), split=False, keep_or
                 offset += len(v)
             write_stl(out_base + ".stl", np.concatenate(vs), np.concatenate(ts), title)
             files.append(out_base + ".stl")
+    order = []
+    for c, _f in colours:
+        if c and c.upper() not in order:
+            order.append(c.upper())
     manifest = {
         "name": title, "unit": "millimeter", "files": [os.path.basename(f) for f in files],
         "parts": [{"name": n, "triangles": int(len(t)), "colour": c, "filament": f,
+                   "filament_number": (order.index(c.upper()) + 1) if c else (1 if order else None),
                    "size_mm": [round(float(s), 3) for s in (v.max(axis=0) - v.min(axis=0))]}
                   for (n, v, t), (c, f) in zip(parts, colours)],
         "size_mm": [round(float(s), 3) for s in (hi - lo)],
@@ -157,7 +190,7 @@ def main():
     p.add_argument("--unit", default="auto", choices=["auto"] + list(pc.UNIT_MM))
     a = p.parse_args(pc.cli_argv())
     res = export(a.objects, a.out, tuple(a.format), a.split, a.keep_origin, a.unit)
-    for f in res["files"]:
+    for f in res["files"] + [res["manifest"]]:
         print("WROTE", f)
     print(pc.MARK + json.dumps(res), flush=True)
 

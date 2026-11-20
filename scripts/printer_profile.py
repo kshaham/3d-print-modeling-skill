@@ -23,6 +23,7 @@ Fields
   layer             usual layer height in mm (optional)
   notes             anything else worth keeping (enclosure, hardened nozzle, bed type)
   blender           path to the Blender executable (set by blender_run.py --set-blender)
+  slicer            path to the slicer executable (set by print_slice.py --set-slicer)
 
 Stored at ~/.3d-print-modeling/profile.json, or wherever $PRINT_PROFILE points.
 """
@@ -65,7 +66,7 @@ PRINTERS = {
     "formlabs fuse 1": ("sls", (165, 165, 300), None, "single"),
 }
 FIELDS = ("printer", "process", "build", "nozzle", "colors", "color_system", "materials",
-          "default_material", "layer", "notes", "blender")
+          "default_material", "layer", "notes", "blender", "slicer")
 
 
 def path():

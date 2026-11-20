@@ -3,6 +3,14 @@
 Runs inside Blender (5.x). Tries every large flat face the model can rest on plus the six axis
 directions, and scores each with the same analysis as print_check.py.
 
+Score (lower is better) = rough minutes to print
+  + 1 for every 25 mm2 that needs support, + 10 if anything needs support at all
+  x 1.5 if the bed contact is small for the height (contact < (height / 3) squared)
+  x 1.5 if --strong-axis ends up vertical
+  + 1000 with almost no flat bed contact, + 1000000 if it does not fit the build volume.
+The ranking weighs time against support. It knows nothing about which faces must look good or
+how the part is loaded unless you say so: read the table, then decide.
+
   blender -b --factory-startup -P print_orient.py -- MODEL.stl [--top 5] [--apply OUT.3mf]
           [--strong-axis x|y|z] [print_check options: --process --nozzle --layer --overhang --build ...]
 
@@ -94,8 +102,11 @@ def rank(path=None, objects=None, unit="auto", strong_axis=None, **kw):
         b = opts["build"]
         fits = (size[0] <= b[0] and size[1] <= b[1] or size[0] <= b[1] and size[1] <= b[0]) and size[2] <= b[2]
         notes = []
-        # minutes, plus a minute for every 25 mm2 that must be supported (removal, scarred surface)
+        # minutes, plus a minute for every 25 mm2 that must be supported (removal, scarred surface),
+        # plus a flat cost for needing supports at all
         score = est["time_min_rough"] + orient["support_area_mm2"] / 25.0
+        if orient["support_area_mm2"] > 1.0:
+            score += 10.0
         if not fits:
             score += 1e6
             notes.append("does not fit the build volume")
@@ -103,9 +114,10 @@ def rank(path=None, objects=None, unit="auto", strong_axis=None, **kw):
             if orient["bed_contact_mm2"] < 20.0:
                 score += 1000.0
                 notes.append("almost no flat bed contact")
-            elif orient["height"] > 5.0 * max(min(orient["bed_footprint_mm"]), 1e-6):
-                score *= 1.2
-                notes.append("tall and narrow: needs a brim")
+            elif orient["bed_contact_mm2"] < (orient["height"] / 3.0) ** 2 or \
+                    orient["height"] > 5.0 * max(min(orient["bed_footprint_mm"]), 1e-6):
+                score *= 1.5
+                notes.append("small bed contact for its height: brim needed, may topple")
         weak = False
         if strong is not None:
             weak = abs(float((r @ np.array(strong, dtype=float))[2])) > 0.7
@@ -148,13 +160,14 @@ def apply(ob, result):
 
 
 def table(results, top):
-    lines = ["rank  rotate XYZ deg             size mm               contact  support   time  notes"]
+    lines = ["rank  score  rotate XYZ deg             size mm               contact  support   time  notes"]
     for x in results[:top]:
         rot = "(%g, %g, %g)" % tuple(x["rotate_xyz_deg"])
         size = "%g x %g x %g" % tuple(x["size_mm"])
-        lines.append(f"{x['rank']:>4}  {rot:<25}  {size:<20}  {x['bed_contact_mm2']:>6.0f}  "
+        lines.append(f"{x['rank']:>4}  {x['score']:>5.0f}  {rot:<25}  {size:<20}  {x['bed_contact_mm2']:>6.0f}  "
                      f"{x['support_area_mm2']:>6.0f}  {x['time_min_rough']:>5}  {'; '.join(x['notes'])}")
-    lines.append("contact and support in mm2, time in minutes (rough). Best first.")
+    lines.append("contact and support in mm2, time in minutes (rough). Lowest score first: minutes, plus 1 per "
+                 "25 mm2 of support and 10 for needing any, x1.5 for small bed contact or a weak load direction.")
     return "\n".join(lines)
 
 

@@ -8,8 +8,9 @@ A small but complete printable part: a wall bracket for two M4 screws. It shows 
 
   python <skill>/scripts/blender_run.py print/author_<name>.py [--review] [--out DIR]
 
-Writes DIR/<NAME>.3mf, .stl, .json and .blend (DIR defaults to print/out beside this script), and
-with --review DIR/<NAME>-review.png. Exits 1 when the check fails, so nothing unprintable ships.
+Writes DIR/<NAME>.3mf, .stl, .json (the manifest) and .blend; DIR defaults to print/out beside this
+script. With --review, or whenever the check fails, also DIR/<NAME>-review.png and its report
+DIR/<NAME>-review.json. Exits 1 when the check fails, so nothing unprintable ships.
 """
 import os
 import sys
@@ -21,6 +22,10 @@ NAME = "wall-bracket"
 ARGS = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 OUT = ARGS[ARGS.index("--out") + 1] if "--out" in ARGS else \
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
+
+# What it will be printed in: sets the bridge and overhang limits and the mass estimate.
+# None uses the default material of the saved printer profile.
+MATERIAL = None
 
 # Dimensions in millimetres. Name every number that someone may want to change.
 BASE = (60.0, 30.0, 4.0)          # length, width, thickness of the plate that sits on the bed
@@ -65,12 +70,12 @@ def build():
 
 if __name__ == "__main__":
     part = build()
-    report = pk.check(part)                                  # reads the saved printer profile
+    report = pk.check(part, material=MATERIAL)               # the rest comes from the printer profile
     pk.save_blend(os.path.join(OUT, NAME + ".blend"))
+    if "--review" in ARGS or not report["pass"]:             # a failing part most needs looking at
+        import print_review as pr
+        pr.review(objects=[part], out=os.path.join(OUT, NAME + "-review.png"), material=MATERIAL)
+        print("REVIEW BOARD", os.path.join(OUT, NAME + "-review.png"))
     if not report["pass"]:
         sys.exit(1)
     pk.export(part, os.path.join(OUT, NAME), formats=("3mf", "stl"), settings=SETTINGS, report=report)
-    if "--review" in ARGS:
-        import print_review as pr
-        pr.review(objects=[part], out=os.path.join(OUT, NAME + "-review.png"))
-        print("REVIEW BOARD", os.path.join(OUT, NAME + "-review.png"))

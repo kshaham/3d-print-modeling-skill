@@ -25,10 +25,13 @@ report = pk.check([body, logo])              # parts may touch; each must be clo
 pk.export([body, logo], "out/tag", report=report)
 ```
 
-`pk.export` writes one 3MF holding each object as a separate part with its display colour, and
-lists parts, colours and filaments in the manifest. In the slicer the user loads the 3MF as one
-object with several parts and gives each part a filament. STL has no parts: use `--split` for
-one STL per colour, all sharing the same origin.
+`pk.export` writes one 3MF in which the coloured objects are the parts of a single object, so
+the slicer keeps them together when it arranges the plate (written as separate objects, an
+inlay is moved out of its pocket). Each part carries its display colour and a filament number:
+distinct colours become filaments 1, 2, 3 in the order the objects are passed. Bambu Studio
+opens such a file with the filaments already assigned; the manifest lists them for any other
+slicer. STL has no parts: use `--split` for one STL per colour, all sharing the same origin.
+Objects without a colour stay separate objects: a plate of loose items.
 
 ## By colour system
 
@@ -86,7 +89,16 @@ separately printed parts in other colours that press or glue in (design them as 
 
 - `print_check.py` on a multi-part file checks each part alone for holes and bad edges, then
   all of them together for orientation, support, walls and size.
+- When the parts carry colours it also reports how many layers hold more than one colour and
+  roughly how many filament changes that means. Use those two numbers to compare designs: the
+  flush 0.6 mm inlay above changes colour on three layers; the same logo through a 20 mm part
+  changes on a hundred. It warns when the model uses more colours than the saved profile has,
+  and when a manual-swap printer is given colours that share a layer.
 - The review board's front, right and top tiles show the parts in their colours. Look for
   slivers, strokes that are too thin and inlays that are not flush.
-- Report to the user: how many colours, how many layers carry more than one, and for manual
-  swaps the change heights.
+- `print_slice.py` on the exported 3MF gives the real cost when Bambu Studio is installed: the
+  number of filament changes and the time including purging. On a P1S profile a 50 mm tag with
+  a 0.6 mm inlay in a second colour sliced at 12 minutes and 3.3 g, against 4 minutes and 2.6 g
+  for the plain tag: two filament changes cost eight minutes and 0.7 g.
+- Report to the user: how many colours and which filament number each is, how many layers carry
+  more than one, and for manual swaps the change heights.

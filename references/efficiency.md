@@ -94,6 +94,8 @@ regions need different strength directions.
 - Cut along a flat plane through the widest section so both halves print cut-face down.
 - Key the joint: two or more pins and sockets (pin 5 mm, socket +0.2 mm diameter, 0.3 mm short),
   a dovetail, or a step. Pins print better as separate pegs lying down than as upright stubs.
+- `low, high, pegs = pk.split(obj, "z", height, pins=2)` does the cut, the sockets and the pegs.
+  Turn each half cut-face down (`pk.rotate(low, "x", 180)`, `pk.to_bed`) and check each alone.
 - Hide the seam on an edge, a panel line or a colour change.
 - Joining: cyanoacrylate for PLA and PETG, solvent for ABS and ASA, screws or heat-set inserts
   where it must come apart.

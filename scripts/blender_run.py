@@ -6,7 +6,7 @@ Plain Python (3.9+). Finds Blender, hides its start-up noise, and passes the exi
   python blender_run.py print_review.py MODEL.stl review.png
   python blender_run.py --blend scene.blend print_check.py --objects Body
   python blender_run.py path/to/author_part.py --review
-  python blender_run.py --json print_check.py MODEL.stl     only the JSON report line
+  python blender_run.py --json-only print_check.py MODEL.stl     print just the JSON report
   python blender_run.py --which                             the Blender it would use
   python blender_run.py --set-blender "C:/path/to/blender.exe"   remember a Blender for next time
 
@@ -64,9 +64,9 @@ def find_blender():
 
 
 def main(argv):
-    json_only = "--json" in argv[:3]
+    json_only = bool(argv) and argv[0] in ("--json-only", "--json")
     if json_only:
-        argv = [a for i, a in enumerate(argv) if not (a == "--json" and i < 3)]
+        argv = argv[1:]
     if argv[:1] == ["--set-blender"]:
         if len(argv) < 2 or not os.path.isfile(argv[1]):
             print("no such file" if len(argv) > 1 else "give the path to the Blender executable")
