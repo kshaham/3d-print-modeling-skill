@@ -5,7 +5,7 @@ Run it after installing the skill, after a Blender update, or after changing a s
   python scripts/blender_run.py self_test.py
 
 It ignores the saved printer profile, writes only to a temporary folder, and exits 1 if any
-expectation fails. Takes about half a minute.
+expectation fails. Takes a few seconds.
 """
 import os
 import shutil
