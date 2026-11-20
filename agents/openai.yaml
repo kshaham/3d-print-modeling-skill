@@ -1,0 +1,4 @@
+interface:
+  display_name: "3D Print Modeling"
+  short_description: "Design, check, orient and export models that print efficiently."
+  default_prompt: "Use 3D Print Modeling to design this part for my printer, check that it prints without support, and export it."
